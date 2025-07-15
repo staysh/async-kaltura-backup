@@ -1,5 +1,5 @@
 # async-kaltura-backup
-Python script to batch download Kaltura entries (source and child entries) in parallel from a csv (like one that can be obtained with (Kaltura Library Export).
+Python script to batch download Kaltura entries (source and child entries) in parallel from a csv (like one that can be obtained with Kaltura Library Export).
 
 ## Prerequisites
 * A csv of Kaltura entries you wish to download with an "Entry ID" column
