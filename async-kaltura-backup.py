@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-root_path = '/path/to/archive/directory'
+root_path = ''
 partner_id = ''
 client_secret = ''
 user_id = ''
@@ -28,7 +28,9 @@ total_assets = 0
 total_urls = 0
 files_downloaded = 0
 unwatched = 0
+calculated = 0
 unwatched_size = 0
+dl_sz = 0
 report_rows = list()
 
 
@@ -199,7 +201,7 @@ async def get_unwatched(queue, sema, session, token, to_queue, logger):
 
 
 async def calc_size(queue, sema, session, token, to_queue, logger):
-    global unwatched_size
+    global unwatched_size, calculated, dl_sz
     params = dict()
     params['filter[objectType]'] = 'KalturaAssetFilter'
     params['ks'] = token
@@ -218,14 +220,16 @@ async def calc_size(queue, sema, session, token, to_queue, logger):
                     # we could snag the source flavor here and save an api call later
                     e['Total Size (KB)'] = sum([int(item.find('size').text) for item in items])
                     unwatched_size += e['Total Size (KB)']
+                    dl_sz += sum([int(item.find('size').text) for item in items if item.find('isOriginal').text == '1'])
                     await to_queue.put(e)
+                    calculated += 1
             except Exception as err:
                 await logger.put(f'ERROR: {type(err)}')
         queue.task_done()
 
 
 async def log_message(queue):
-    async with aiofiles.open(os.path.join(root_path, 'log_file.txt'), 'w') as f:
+    async with aiofiles.open('log_file.txt', 'w') as f:
         while True:
             msg = await queue.get()
             await f.write(msg + '\n')
@@ -233,9 +237,9 @@ async def log_message(queue):
 
 
 async def print_pre_status():
-    global unwatched, unwatched_size
+    global unwatched, unwatched_size, calculated
     while True:
-        print(f'Collecting {unwatched} unwatched entries, with a total storage size of {(unwatched_size/1000.0):.2f}', end='\r')
+        print(f'Calculating {calculated} of {unwatched} unwatched entries: {(unwatched_size/1000000.0):.2f} GB', end='\r')
         await asyncio.sleep(1)
 
 
@@ -256,9 +260,10 @@ async def queue_to_list(async_queue):
 
 async def main():
 
+    print(f"Fast archive and delete Kaltura media by station.gammmill@pcc.edu")
+    print(f"Authenticating....", end='\r')
     token = get_token()
-
-    print(f'Collecting unwatched video data...')
+    print(f'Setting up async tasks...', end='\r')
 
     filename = f"KMC-unwatched-four-years-from-{datetime.now().strftime('%Y-%m-%d')}.csv"
     fieldnames = ['Entry ID', 'Name', 'User', 'Reference ID', 'Source', 'Total Size (KB)']
@@ -332,9 +337,9 @@ async def main():
     prelim_print.cancel()
     await asyncio.gather(prelim_print, return_exceptions=True)
 
-    print(f'Collected {unwatched} unwatched entries, with a total storage size of {(unwatched_size / 1000.0):.2f}')
+    print(f'Calculating {calculated} of {unwatched} unwatched entries: {(unwatched_size/1000000.0):.2f} GB')
 
-    # report_queue is now primed and we can print the report
+    # report_queue is now primed, and we can print the report
     # Should pause here to say ok and jump to here with report maybe
     with open(filename, 'w') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -343,8 +348,16 @@ async def main():
 
     print(f'Report saved to {filename}')
 
+    proceed = input(f'Download to {root_path} [approx {(dl_sz/1000000.0):.2f} GB]? (y/n) ')
+    if proceed == 'n':
+        print('Exiting...')
+        await session.close()
+        exit(0)
+
+    print(f'Setting up async tasks...', end='\r')
 
     # prime the first queue with calls for flavors, captions and attachments
+    # see if flavors can be added earlier when the storage size is calculated
     for e in report_rows:
         init_queue.put_nowait({'entryId': e['Entry ID'], 'url': api + flav + li, 'type': 'flavor', 'name': e['Name']})
         init_queue.put_nowait({'entryId': e['Entry ID'], 'url': api + cap + li, 'type': 'caption', 'name': e['Name']})
@@ -352,8 +365,6 @@ async def main():
 
     # create workers to log messages from other workers
     print_update = asyncio.create_task(print_status())
-
-
 
     # there's probably a more idiomatic way to write all these
     asset_tasks = []
@@ -394,9 +405,11 @@ async def main():
     await session.close()
 
     # print final status to the main output
-    print(f"Searching: found {total_assets} child assets, {files_downloaded} assets downloaded          ")
+    print(f"Final Result: found {total_assets} child assets, {files_downloaded} assets downloaded          ")
+    print("Next steps:")
     print("Check log_file.txt in root backup directory for errors")
-    print("Search for empty files with find /path/to/backup/directory -size 0 and verify size in KMC")
+    print(f"Search for empty files with 'find {root_path} -size 0' and verify size in KMC")
+    print("Change input_file in delete script to the newest report and run to delete entries")
 
 
 if __name__ == '__main__':
